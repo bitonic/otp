@@ -391,12 +391,11 @@ from_orddict(L) ->
       Tree1 :: gb_tree(),
       Tree2 :: gb_tree().
 
-delete_any(Key, T) ->
-    case is_defined(Key, T) of
-	true ->
-	    delete(Key, T);
-	false ->
-	    T
+delete_any(Key, {S, T}) ->
+    try delete_1(Key, T) of
+        T1 -> {S - 1, T1}
+    catch
+        throw:key_not_present -> {S, T}
     end.
 
 %%% delete. Assumes that key is present.
@@ -411,14 +410,14 @@ delete(Key, {S, T}) when is_integer(S), S >= 0 ->
 
 %% See `lookup' for notes on the term comparison order.
 
-delete_1(Key, {Key1, Value, Smaller, Larger}) when Key < Key1 ->
-    Smaller1 = delete_1(Key, Smaller),
-    {Key1, Value, Smaller1, Larger};
+delete_1(Key, {Key1, Value, Smaller, Bigger}) when Key < Key1 ->
+    {Key1, Value, delete_1(Key, Smaller), Bigger};
 delete_1(Key, {Key1, Value, Smaller, Bigger}) when Key > Key1 ->
-    Bigger1 = delete_1(Key, Bigger),
-    {Key1, Value, Smaller, Bigger1};
+    {Key1, Value, Smaller, delete_1(Key, Bigger)};
 delete_1(_, {_, _, Smaller, Larger}) ->
-    merge(Smaller, Larger).
+    merge(Smaller, Larger);
+delete_1(_, nil) ->
+    throw(key_not_present).
 
 merge(Smaller, nil) ->
     Smaller;
@@ -494,7 +493,7 @@ largest_1({_Key, _Value, _Smaller, Larger}) ->
       Tree :: gb_tree(),
       Key :: term(),
       Val :: term().
-			   
+
 to_list({_, T}) ->
     to_list(T, []).
 

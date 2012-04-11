@@ -165,7 +165,7 @@
 -export([new/0, is_element/2, add_element/2, del_element/2,
 	 subtract/2]).
 
-%% GB-trees adapted from Sven-Olof Nyström's implementation for
+%% GB-trees adapted from Sven-Olof NystrÃ¶m's implementation for
 %% representation of sets.
 %%
 %% Data structures:
@@ -395,12 +395,11 @@ del_element(Key, S) ->
       Set1 :: gb_set(),
       Set2 :: gb_set().
 
-delete_any(Key, S) ->
-    case is_member(Key, S) of
- 	true ->
- 	    delete(Key, S);
- 	false ->
- 	    S
+delete_any(Key, {S, T}) ->
+    try delete_1(Key, T) of
+        T1 -> {S - 1, T1}
+    catch
+        throw:key_not_present -> {S, T}
     end.
 
 -spec delete(Element, Set1) -> Set2 when
@@ -411,14 +410,14 @@ delete_any(Key, S) ->
 delete(Key, {S, T}) ->
     {S - 1, delete_1(Key, T)}.
 
-delete_1(Key, {Key1, Smaller, Larger}) when Key < Key1 ->
-    Smaller1 = delete_1(Key, Smaller),
-    {Key1, Smaller1, Larger};
+delete_1(Key, {Key1, Smaller, Bigger}) when Key < Key1 ->
+    {Key1, delete_1(Key, Smaller), Bigger};
 delete_1(Key, {Key1, Smaller, Bigger}) when Key > Key1 ->
-    Bigger1 = delete_1(Key, Bigger),
-    {Key1, Smaller, Bigger1};
+    {Key1, Smaller, delete_1(Key, Bigger)};
 delete_1(_, {_, Smaller, Larger}) ->
-    merge(Smaller, Larger).
+    merge(Smaller, Larger);
+delete_1(_, nil) ->
+    throw(key_not_present).
 
 merge(Smaller, nil) ->
     Smaller;
