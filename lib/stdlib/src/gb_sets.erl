@@ -773,7 +773,7 @@ difference(S1, S2) ->
 is_subset({S1, _}, {S2, _}) when S1 > S2 ->
     false;
 is_subset(S1, S2) ->
-    fold(fun (X, B) -> B and is_member(X, S2) end, true, S1).
+    fold(fun (X, B) -> B andalso is_member(X, S2) end, true, S1).
 
 
 %% For compatibility with `sets':
