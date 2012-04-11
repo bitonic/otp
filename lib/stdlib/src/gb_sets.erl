@@ -763,7 +763,7 @@ subtract(S1, S2) ->
       Set3 :: gb_set().
 
 difference(S1, S2) ->
-    lists:foldl(fun delete_any/2, S1, gb_sets:to_list(S2)).
+    gb_sets:fold(fun delete_any/2, S1, S2).
 
 
 -spec is_subset(Set1, Set2) -> boolean() when
