@@ -165,7 +165,7 @@
 -export([new/0, is_element/2, add_element/2, del_element/2,
 	 subtract/2]).
 
-%% GB-trees adapted from Sven-Olof Nyström's implementation for
+%% GB-trees adapted from Sven-Olof NystrÃ¶m's implementation for
 %% representation of sets.
 %%
 %% Data structures:
@@ -185,13 +185,14 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Some macros. 
 
--define(p, 2). % It seems that p = 2 is optimal for sorted keys
+-define(c, 1.46).    % 1 / ln 2; this appears to be best
 
--define(pow(A, _), A * A). % correct with exponent as defined above.
+-define(lb(X), math:log(X) * 1.4426950408889634).
 
--define(div2(X), X bsr 1). 
-
--define(mul2(X), X bsl 1).
+%% ceil(c * log(|T|))
+%% We add 1 because the cardinality is defined as number of leaves, which is 
+%% the number of elements + 1.
+-define(height_bound(S), trunc(?c * ?lb(S + 1)) + 1).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Some types.
@@ -235,7 +236,7 @@ size({Size, _}) ->
       Element :: term().
 
 singleton(Key) ->
-    {1, {Key, nil, nil}}.
+    insert(Key, empty()).
 
 -spec is_element(Element, Set) -> boolean() when
       Element :: term(),
@@ -267,57 +268,57 @@ is_member_1(_, nil) ->
 
 insert(Key, {S, T}) ->
     S1 = S + 1,
-    {S1, insert_1(Key, T, ?pow(S1, ?p))}.
+    case insert_1(Key, T, 0, S1) of
+        {ok, T1}            -> {S1, T1};
+        {exceeds, T1, _, _} -> balance({S1, T1})
+    end.
 
-insert_1(Key, {Key1, Smaller, Bigger}, S) when Key < Key1 -> 
-    case insert_1(Key, Smaller, ?div2(S)) of
-	{T1, H1, S1} when is_integer(H1) ->
-	    T = {Key1, T1, Bigger},
-	    {H2, S2} = count(Bigger),
-	    H = ?mul2(erlang:max(H1, H2)),
-	    SS = S1 + S2 + 1,
-	    P = ?pow(SS, ?p),
-	    if
-		H > P -> 
-		    balance(T, SS);
-		true ->
-		    {T, H, SS}
-	    end;
-	T1 ->
-	    {Key1, T1, Bigger}
+insert_1(Key, nil, H, TotalS) ->
+    T  = {Key, nil, nil},
+    ST = 1,
+    HT = 1,
+    case H > ?height_bound(TotalS) of
+        true  -> {exceeds, T, ST, HT};
+        false -> {ok, T}
     end;
-insert_1(Key, {Key1, Smaller, Bigger}, S) when Key > Key1 -> 
-    case insert_1(Key, Bigger, ?div2(S)) of
-	{T1, H1, S1} when is_integer(H1) ->
-	    T = {Key1, Smaller, T1},
-	    {H2, S2} = count(Smaller),
-	    H = ?mul2(erlang:max(H1, H2)),
-	    SS = S1 + S2 + 1,
-	    P = ?pow(SS, ?p),
-	    if
-		H > P -> 
-		    balance(T, SS);
-		true ->
-		    {T, H, SS}
-	    end;
-	T1 ->
-	    {Key1, Smaller, T1}
+insert_1(Key, {Key1, Smaller, Bigger}, Height, TotalS) when Key < Key1 ->
+    case insert_1(Key, Smaller, Height + 1, TotalS) of
+        {ok, T} ->
+            {ok, {Key1, T, Bigger}};
+        {exceeds, T, ST, HT} ->
+            {SBigger, HBigger} = count(Bigger),
+            S = ST + SBigger,
+            H = max(HT, HBigger) + 1,
+            case H > ?height_bound(S) of
+                true  -> {exceeds, {Key1, T, Bigger}, S, H};
+                false -> {_, T1} = balance({ST, T}),
+                         {ok, {Key1, T1, Bigger}}
+            end
     end;
-insert_1(Key, nil, 0) ->
-    {{Key, nil, nil}, 1, 1};
-insert_1(Key, nil, _) ->
-    {Key, nil, nil};
-insert_1(Key, _, _) ->
+insert_1(Key, {Key1, Smaller, Bigger}, Height, TotalS) when Key > Key1 ->
+    case insert_1(Key, Bigger, Height + 1, TotalS) of
+        {ok, T} ->
+            {ok, {Key1, Smaller, T}};
+        {exceeds, T, ST, HT} ->
+            {SSmaller, HSmaller} = count(Smaller),
+            S = ST + SSmaller,
+            H = max(HT, HSmaller) + 1,
+            case H > ?height_bound(S) of
+                true  -> {exceeds, {Key1, Smaller, T}, S, H};
+                false -> {_, T1} = balance({ST, T}),
+                         {ok, {Key1, Smaller, T1}}
+            end
+    end;
+insert_1(Key, _, _, _) ->
     erlang:error({key_exists, Key}).
 
-count({_, nil, nil}) ->
-    {1, 1};
-count({_, Sm, Bi}) ->
-    {H1, S1} = count(Sm),
-    {H2, S2} = count(Bi),
-    {?mul2(erlang:max(H1, H2)), S1 + S2 + 1};
+%% Returns {Size, Height}
 count(nil) ->
-    {1, 0}.
+    {0, 0};
+count({_, Smaller, Bigger}) ->
+    {WSmaller, HSmaller} = count(Smaller),
+    {WBigger,  HBigger}  = count(Bigger),
+    {WSmaller + WBigger + 1, max(HSmaller, HBigger) + 1}.
 
 -spec balance(Set1) -> Set2 when
       Set1 :: gb_set(),
@@ -533,8 +534,6 @@ next([]) ->
 %% a `log2'-function, we rewrite the condition to |X| < |Y| * c1 *
 %% ln(|X|), where c1 = c / ln 2.
 
--define(c, 1.46).    % 1 / ln 2; this appears to be best
-
 %% If the sets are not very different in size, i.e., if |Y| / |X| >= c *
 %% log(|Y|), then the fastest way to do union (and the other similar set
 %% operations) is to build the lists of elements, traverse these lists
@@ -561,7 +560,7 @@ union(L, N1, T2, N2) when N2 < 10 ->
     %% Break even is about 7 for N1 = 1 and 10 for N1 = 2
     union_2(L, to_list_1(T2), N1 + N2);
 union(L, N1, T2, N2) ->
-    X = N1 * round(?c * math:log(N2)),
+    X = N1 * round(?lb(N2)),
     if N2 < X ->
 	    union_2(L, to_list_1(T2), N1 + N2);
        true ->
@@ -676,7 +675,7 @@ intersection({N1, T1}, {N2, T2}) ->
 intersection(L, _N1, T2, N2) when N2 < 10 ->
     intersection_2(L, to_list_1(T2));
 intersection(L, N1, T2, N2) ->
-    X = N1 * round(?c * math:log(N2)),
+    X = N1 * round(?lb(N2)),
     if N2 < X ->
 	    intersection_2(L, to_list_1(T2));
        true ->
