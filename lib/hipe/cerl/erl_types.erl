@@ -1619,7 +1619,8 @@ t_digraph() ->
 
 t_gb_set() ->
   t_opaque(gb_sets, gb_set, [],
-	   t_tuple([t_non_neg_integer(), t_sup(t_atom('nil'), t_tuple(3))])).
+	   t_tuple([t_non_neg_integer(), t_non_neg_integer(),
+                    t_sup(t_atom('nil'), t_tuple(3))])).
 
 -spec t_gb_tree() -> erl_type().
 

@@ -189,10 +189,17 @@
 
 -define(lb(X), math:log(X) * 1.4426950408889634).
 
-%% ceil(c * log(|T|))
+%% ceil(c * log(|T| + d(T)))
 %% We add 1 because the cardinality is defined as number of leaves, which is 
 %% the number of elements + 1.
--define(height_bound(S), trunc(?c * ?lb(S + 1)) + 1).
+-define(height_bound(S, Dels), trunc(?c * ?lb(S + 1 + Dels)) + 1).
+
+-define(b, 10).
+
+-define(pow2(X), 1 bsl X).
+
+%% 2^(b/c) * |T|
+-define(deletions_bound(S), (?pow2(?b / ?c) - 1) * S).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Some types.
@@ -211,7 +218,7 @@
       Set :: gb_set().
 
 empty() ->
-    {0, nil}.
+    {0, 0, nil}.
 
 -spec new() -> Set when
       Set :: gb_set().
@@ -221,7 +228,7 @@ new() -> empty().
 -spec is_empty(Set) -> boolean() when
       Set :: gb_set().
 
-is_empty({0, nil}) ->
+is_empty({0, _, nil}) ->
     true;
 is_empty(_) ->
     false.
@@ -229,7 +236,7 @@ is_empty(_) ->
 -spec size(Set) -> non_neg_integer() when
       Set :: gb_set().
 
-size({Size, _}) ->
+size({Size, _, _}) ->
     Size.
 
 -spec singleton(Element) -> gb_set() when
@@ -249,7 +256,7 @@ is_element(Key, S) ->
       Element :: term(),
       Set :: gb_set().
 
-is_member(Key, {_, T}) ->
+is_member(Key, {_, _, T}) ->
     is_member_1(Key, T).
 
 is_member_1(Key, {Key1, Smaller, _}) when Key < Key1 ->
@@ -266,50 +273,51 @@ is_member_1(_, nil) ->
       Set1 :: gb_set(),
       Set2 :: gb_set().
 
-insert(Key, {S, T}) ->
+insert(Key, {S, Dels, T}) ->
     S1 = S + 1,
-    case insert_1(Key, T, 0, S1) of
-        {ok, T1}            -> {S1, T1};
-        {exceeds, T1, _, _} -> balance({S1, T1})
-    end.
+    {S1, Dels,
+     case insert_1(Key, T, 0, S1, Dels) of
+         {ok, T1}            -> T1;
+         {exceeds, T1, _, _} -> balance(T1, S1)
+     end}.
 
-insert_1(Key, nil, H, TotalS) ->
+insert_1(Key, nil, H, TotalS, Dels) ->
     T  = {Key, nil, nil},
     ST = 1,
     HT = 1,
-    case H > ?height_bound(TotalS) of
+    case H > ?height_bound(TotalS, Dels) of
         true  -> {exceeds, T, ST, HT};
         false -> {ok, T}
     end;
-insert_1(Key, {Key1, Smaller, Bigger}, Height, TotalS) when Key < Key1 ->
-    case insert_1(Key, Smaller, Height + 1, TotalS) of
+insert_1(Key, {Key1, Smaller, Bigger}, Height, TotalS, Dels) when Key < Key1 ->
+    case insert_1(Key, Smaller, Height + 1, TotalS, Dels) of
         {ok, T} ->
             {ok, {Key1, T, Bigger}};
         {exceeds, T, ST, HT} ->
             {SBigger, HBigger} = count(Bigger),
             S = ST + SBigger,
             H = max(HT, HBigger) + 1,
-            case H > ?height_bound(S) of
+            case H > ?height_bound(S, Dels) of
                 true  -> {exceeds, {Key1, T, Bigger}, S, H};
-                false -> {_, T1} = balance({ST, T}),
+                false -> T1 = balance(T, ST),
                          {ok, {Key1, T1, Bigger}}
             end
     end;
-insert_1(Key, {Key1, Smaller, Bigger}, Height, TotalS) when Key > Key1 ->
-    case insert_1(Key, Bigger, Height + 1, TotalS) of
+insert_1(Key, {Key1, Smaller, Bigger}, Height, TotalS, Dels) when Key > Key1 ->
+    case insert_1(Key, Bigger, Height + 1, TotalS, Dels) of
         {ok, T} ->
             {ok, {Key1, Smaller, T}};
         {exceeds, T, ST, HT} ->
             {SSmaller, HSmaller} = count(Smaller),
             S = ST + SSmaller,
             H = max(HT, HSmaller) + 1,
-            case H > ?height_bound(S) of
+            case H > ?height_bound(S, Dels) of
                 true  -> {exceeds, {Key1, Smaller, T}, S, H};
-                false -> {_, T1} = balance({ST, T}),
+                false -> T1 = balance(T, ST),
                          {ok, {Key1, Smaller, T1}}
             end
     end;
-insert_1(Key, _, _, _) ->
+insert_1(Key, _, _, _, _) ->
     erlang:error({key_exists, Key}).
 
 %% Returns {Size, Height}
@@ -324,8 +332,8 @@ count({_, Smaller, Bigger}) ->
       Set1 :: gb_set(),
       Set2 :: gb_set().
 
-balance({S, T}) ->
-    {S, balance(T, S)}.
+balance({S, _, T}) ->
+    {S, 0, balance(T, S)}.
 
 balance(T, S) ->
     balance_list(to_list_1(T), S).
@@ -361,12 +369,13 @@ add_element(X, S) ->
       Set2 :: gb_set().
 
 add(X, S) ->
-    case is_member(X, S) of
+    Foo = case is_member(X, S) of
 	true ->
 	    S;    % we don't have to do anything here
 	false ->
 	    insert(X, S)
-    end.
+    end,
+    Foo.
 
 -spec from_list(List) -> Set when
       List :: [term()],
@@ -381,7 +390,7 @@ from_list(L) ->
 
 from_ordset(L) ->
     S = length(L),
-    {S, balance_list(L, S)}.
+    {S, 0, balance_list(L, S)}.
 
 -spec del_element(Element, Set1) -> Set2 when
       Element :: term(),
@@ -404,13 +413,19 @@ delete_any(Key, S) ->
  	    S
     end.
 
+check_deletions({S, Dels, T}) when Dels >= ?deletions_bound(S) ->
+    {S, 0, balance(T, S)};
+check_deletions(S) ->
+    S.
+
 -spec delete(Element, Set1) -> Set2 when
       Element :: term(),
       Set1 :: gb_set(),
       Set2 :: gb_set().
 
-delete(Key, {S, T}) ->
-    {S - 1, delete_1(Key, T)}.
+delete(Key, {S, Dels, T}) ->
+    T1 = delete_1(Key, T),
+    check_deletions({S + 1, Dels + 1, T1}).
 
 delete_1(Key, {Key1, Smaller, Larger}) when Key < Key1 ->
     Smaller1 = delete_1(Key, Smaller),
@@ -434,9 +449,9 @@ merge(Smaller, Larger) ->
       Set2 :: gb_set(),
       Element :: term().
 
-take_smallest({S, T}) ->
+take_smallest({S, Dels, T}) ->
     {Key, Larger} = take_smallest1(T),
-    {Key, {S - 1, Larger}}.
+    {Key, check_deletions({S - 1, Dels + 1, Larger})}.
 
 take_smallest1({Key, nil, Larger}) ->
     {Key, Larger};
@@ -447,7 +462,7 @@ take_smallest1({Key, Smaller, Larger}) ->
 -spec smallest(Set) -> term() when
       Set :: gb_set().
 
-smallest({_, T}) ->
+smallest({_, _, T}) ->
     smallest_1(T).
 
 smallest_1({Key, nil, _Larger}) ->
@@ -460,9 +475,9 @@ smallest_1({_Key, Smaller, _Larger}) ->
       Set2 :: gb_set(),
       Element :: term().
 
-take_largest({S, T}) ->
+take_largest({S, Dels, T}) ->
     {Key, Smaller} = take_largest1(T),
-    {Key, {S - 1, Smaller}}.
+    {Key, check_deletions({S - 1, Dels + 1, Smaller})}.
 
 take_largest1({Key, Smaller, nil}) ->
     {Key, Smaller};
@@ -473,7 +488,7 @@ take_largest1({Key, Smaller, Larger}) ->
 -spec largest(Set) -> term() when
       Set :: gb_set().
 
-largest({_, T}) ->
+largest({_, _, T}) ->
     largest_1(T).
 
 largest_1({Key, _Smaller, nil}) ->
@@ -485,7 +500,7 @@ largest_1({_Key, _Smaller, Larger}) ->
       Set :: gb_set(),
       List :: [term()].
 
-to_list({_, T}) ->
+to_list({_, _, T}) ->
     to_list(T, []).
 
 to_list_1(T) -> to_list(T, []).
@@ -498,7 +513,7 @@ to_list(nil, L) -> L.
       Set :: gb_set(),
       Iter :: iter().
 
-iterator({_, T}) ->
+iterator({_, _, T}) ->
     iterator(T, []).
 
 %% The iterator structure is really just a list corresponding to the
@@ -521,232 +536,56 @@ next([{X, _, T} | As]) ->
 next([]) ->
     none.
 
-
 %% Set operations:
-
-
-%% If |X| < |Y|, then we traverse the elements of X. The cost for
-%% testing a single random element for membership in a tree S is
-%% proportional to log(|S|); thus, if |Y| / |X| < c * log(|Y|), for some
-%% c, it is more efficient to scan the ordered sequence of elements of Y
-%% while traversing X (under the same ordering) in order to test whether
-%% elements of X are already in Y. Since the `math' module does not have
-%% a `log2'-function, we rewrite the condition to |X| < |Y| * c1 *
-%% ln(|X|), where c1 = c / ln 2.
-
-%% If the sets are not very different in size, i.e., if |Y| / |X| >= c *
-%% log(|Y|), then the fastest way to do union (and the other similar set
-%% operations) is to build the lists of elements, traverse these lists
-%% in parallel while building a reversed ackumulator list, and finally
-%% rebuild the tree directly from the ackumulator. Other methods of
-%% traversing the elements can be devised, but they all have higher
-%% overhead.
 
 -spec union(Set1, Set2) -> Set3 when
       Set1 :: gb_set(),
       Set2 :: gb_set(),
       Set3 :: gb_set().
 
-union({N1, T1}, {N2, T2}) when N2 < N1 ->
-    union(to_list_1(T2), N2, T1, N1);
-union({N1, T1}, {N2, T2}) ->
-    union(to_list_1(T1), N1, T2, N2).
-
-%% We avoid the expensive mathematical computations if there is little
-%% chance at saving at least the same amount of time by making the right
-%% choice of strategy. Recall that N1 < N2 here.
-
-union(L, N1, T2, N2) when N2 < 10 ->
-    %% Break even is about 7 for N1 = 1 and 10 for N1 = 2
-    union_2(L, to_list_1(T2), N1 + N2);
-union(L, N1, T2, N2) ->
-    X = N1 * round(?lb(N2)),
-    if N2 < X ->
-	    union_2(L, to_list_1(T2), N1 + N2);
-       true ->
-	    union_1(L, mk_set(N2, T2))
-    end.
-
--spec mk_set(non_neg_integer(), gb_set_node()) -> gb_set().
-
-mk_set(N, T) ->
-    {N, T}.
-
-%% If the length of the list is in proportion with the size of the
-%% target set, this version spends too much time doing lookups, compared
-%% to the below version.
-
-union_1([X | Xs], S) ->
-    union_1(Xs, add(X, S));
-union_1([], S) ->
-    S.
-
-
-%% If the length of the first list is too small in comparison with the
-%% size of the target set, this version spends too much time scanning
-%% the element list of the target set for possible membership, compared
-%% with the above version.
-
-%% Some notes on sequential scanning of ordered lists
-%%
-%% 1) We want to put the equality case last, if we can assume that the
-%% probability for overlapping elements is relatively low on average.
-%% Doing this also allows us to completely skip the (arithmetic)
-%% equality test, since the term order is arithmetically total.
-%%
-%% 2) We always test for `smaller than' first, i.e., whether the head of
-%% the left list is smaller than the head of the right list, and if the
-%% `greater than' test should instead turn out to be true, we switch
-%% left and right arguments in the recursive call under the assumption
-%% that the same is likely to apply to the next element also,
-%% statistically reducing the number of failed tests and automatically
-%% adapting to cases of lists having very different lengths. This saves
-%% 10-40% of the traversation time compared to a "fixed" strategy,
-%% depending on the sizes and contents of the lists.
-%%
-%% 3) A tail recursive version using `lists:reverse/2' is about 5-10%
-%% faster than a plain recursive version using the stack, for lists of
-%% more than about 20 elements and small stack frames. For very short
-%% lists, however (length < 10), the stack version can be several times
-%% faster. As stack frames grow larger, the advantages of using
-%% `reverse' could get greater.
-
-union_2(Xs, Ys, S) ->
-    union_2(Xs, Ys, [], S).    % S is the sum of the sizes here
-
-union_2([X | Xs1], [Y | _] = Ys, As, S) when X < Y ->
-    union_2(Xs1, Ys, [X | As], S);
-union_2([X | _] = Xs, [Y | Ys1], As, S) when X > Y ->
-    union_2(Ys1, Xs, [Y | As], S);
-union_2([X | Xs1], [_ | Ys1], As, S) ->
-    union_2(Xs1, Ys1, [X | As], S - 1);
-union_2([], Ys, As, S) ->
-    {S, balance_revlist(push(Ys, As), S)};
-union_2(Xs, [], As, S) ->
-    {S, balance_revlist(push(Xs, As), S)}.
-
-push([X | Xs], As) ->
-    push(Xs, [X | As]);
-push([], As) ->
-    As.
-
-balance_revlist(L, S) ->
-    {T, _} = balance_revlist_1(L, S),
-    T.
-
-balance_revlist_1(L, S) when S > 1 ->
-    Sm = S - 1,
-    S2 = Sm div 2,
-    S1 = Sm - S2,
-    {T2, [K | L1]} = balance_revlist_1(L, S1),
-    {T1, L2} = balance_revlist_1(L1, S2),
-    T = {K, T1, T2},
-    {T, L2};
-balance_revlist_1([Key | L], 1) ->
-    {{Key, nil, nil}, L};
-balance_revlist_1(L, 0) ->
-    {nil, L}.
+union(S1, S2) ->
+    {L, R} = order(S1, S2),
+    Foo = fold(add/2, L, R),
+    Foo.
 
 -spec union(SetList) -> Set when
       SetList :: [gb_set(),...],
       Set :: gb_set().
 
-union([S | Ss]) ->
-    union_list(S, Ss);
-union([]) -> empty().
+union(Ss) -> lists:foldl(union/2, empty(), Ss).
 
-union_list(S, [S1 | Ss]) ->
-    union_list(union(S, S1), Ss);
-union_list(S, []) -> S.
-
-
-%% The rest is modelled on the above.
+order(S1 = {Size1, _, _}, S2 = {Size2, _, _}) when Size1 > Size2 ->
+    {S1, S2};
+order(S1, S2) ->
+    {S2, S1}.
 
 -spec intersection(Set1, Set2) -> Set3 when
       Set1 :: gb_set(),
       Set2 :: gb_set(),
       Set3 :: gb_set().
 
-intersection({N1, T1}, {N2, T2}) when N2 < N1 ->
-    intersection(to_list_1(T2), N2, T1, N1);
-intersection({N1, T1}, {N2, T2}) ->
-    intersection(to_list_1(T1), N1, T2, N2).
-
-intersection(L, _N1, T2, N2) when N2 < 10 ->
-    intersection_2(L, to_list_1(T2));
-intersection(L, N1, T2, N2) ->
-    X = N1 * round(?lb(N2)),
-    if N2 < X ->
-	    intersection_2(L, to_list_1(T2));
-       true ->
-	    intersection_1(L, T2)
-    end.
-
-%% We collect the intersecting elements in an accumulator list and count
-%% them at the same time so we can balance the list afterwards.
-
-intersection_1(Xs, T) ->
-    intersection_1(Xs, T, [], 0).
-
-intersection_1([X | Xs], T, As, N) ->
-    case is_member_1(X, T) of
-	true ->
-	    intersection_1(Xs, T, [X | As], N + 1);
-	false ->
-	    intersection_1(Xs, T, As, N)
-    end;
-intersection_1([], _, As, N) ->
-    {N, balance_revlist(As, N)}.
-
-
-intersection_2(Xs, Ys) ->
-    intersection_2(Xs, Ys, [], 0).
-
-intersection_2([X | Xs1], [Y | _] = Ys, As, S) when X < Y ->
-    intersection_2(Xs1, Ys, As, S);
-intersection_2([X | _] = Xs, [Y | Ys1], As, S) when X > Y ->
-    intersection_2(Ys1, Xs, As, S);
-intersection_2([X | Xs1], [_ | Ys1], As, S) ->
-    intersection_2(Xs1, Ys1, [X | As], S + 1);
-intersection_2([], _, As, S) ->
-    {S, balance_revlist(As, S)};
-intersection_2(_, [], As, S) ->
-    {S, balance_revlist(As, S)}.
+intersection(S1, S2) ->
+    {L, R} = order(S1, S2),
+    fold(fun (X, S) ->
+                 case is_element(X, L) of
+                     true  -> insert(X, S);
+                     false -> S
+                 end
+         end, empty(), R).
 
 -spec intersection(SetList) -> Set when
       SetList :: [gb_set(),...],
       Set :: gb_set().
 
-intersection([S | Ss]) ->
-    intersection_list(S, Ss).
-
-intersection_list(S, [S1 | Ss]) ->
-    intersection_list(intersection(S, S1), Ss);
-intersection_list(S, []) -> S.
+intersection([S | Ss]) -> lists:foldl(insersection/2, S, Ss).
 
 -spec is_disjoint(Set1, Set2) -> boolean() when
       Set1 :: gb_set(),
       Set2 :: gb_set().
 
-is_disjoint({N1, T1}, {N2, T2}) when N1 < N2 ->
-    is_disjoint_1(T1, T2);
-is_disjoint({_, T1}, {_, T2}) ->
-    is_disjoint_1(T2, T1).
-
-is_disjoint_1({K1, Smaller1, Bigger}, {K2, Smaller2, _}=Tree) when K1 < K2 ->
-    not is_member_1(K1, Smaller2) andalso
-	is_disjoint_1(Smaller1, Smaller2) andalso
-	is_disjoint_1(Bigger, Tree);
-is_disjoint_1({K1, Smaller, Bigger1}, {K2, _, Bigger2}=Tree) when K1 > K2 ->
-    not is_member_1(K1, Bigger2) andalso
-	is_disjoint_1(Bigger1, Bigger2) andalso
-	is_disjoint_1(Smaller, Tree);
-is_disjoint_1({_K1, _, _}, {_K2, _, _}) ->	%K1 == K2
-    false;
-is_disjoint_1(nil, _) ->
-    true;
-is_disjoint_1(_, nil) ->
-    true.
+is_disjoint(S1, S2) ->
+    {L, R} = order(S1, S2),
+    lists:foldl(fun (X, B) -> B andalso (not is_member(X, L)) end, true, R).
 
 -spec subtract(Set1, Set2) -> Set3 when
       Set1 :: gb_set(),
@@ -769,7 +608,7 @@ difference(S1, S2) ->
       Set1 :: gb_set(),
       Set2 :: gb_set().
 
-is_subset({S1, _}, {S2, _}) when S1 > S2 ->
+is_subset({S1, _, _}, {S2, _, _}) when S1 > S2 ->
     false;
 is_subset(S1, S2) ->
     fold(fun (X, B) -> B andalso is_member(X, S2) end, true, S1).
@@ -780,9 +619,10 @@ is_subset(S1, S2) ->
 -spec is_set(Term) -> boolean() when
       Term :: term().
 
-is_set({0, nil}) -> true;
-is_set({N, {_, _, _}}) when is_integer(N), N >= 0 -> true;
-is_set(_) -> false.
+is_set({0, D, nil})       when is_integer(D)          -> true;
+is_set({S, D, {_, _, _}}) when is_integer(S), S >= 0,
+                               is_integer(D), D >= 0  -> true;
+is_set(_)                                             -> false.
 
 -spec filter(Pred, Set1) -> Set2 when
       Pred :: fun((E :: term()) -> boolean()),
@@ -800,7 +640,7 @@ filter(F, S) ->
       AccOut :: term(),
       Set :: gb_set().
 
-fold(F, A, {_, T}) when is_function(F, 2) ->
+fold(F, A, {_, _, T}) when is_function(F, 2) ->
     fold_1(F, A, T).
 
 fold_1(F, Acc0, {Key, Small, Big}) ->
